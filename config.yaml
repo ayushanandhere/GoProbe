@@ -1,0 +1,26 @@
+server:
+  port: 8080
+
+monitor:
+  default_interval: 10s
+  default_timeout: 5s
+
+targets:
+  - name: "Google"
+    type: "http"
+    endpoint: "https://www.google.com"
+    interval: 15s
+    timeout: 3s
+
+  - name: "GitHub"
+    type: "http"
+    endpoint: "https://github.com"
+
+  - name: "Redis Local"
+    type: "tcp"
+    endpoint: "localhost:6379"
+    interval: 5s
+
+  - name: "PostgreSQL Local"
+    type: "tcp"
+    endpoint: "localhost:5432"
