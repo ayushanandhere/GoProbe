@@ -34,6 +34,8 @@ Use a different config file if needed:
 
 The server listens on port `8080` by default.
 
+If `server.auth_token` is not set, GoProbe generates an ephemeral bearer token for `POST` and `DELETE` requests at startup and logs it once. You can also set `GOPROBE_API_TOKEN` in the environment or `server.auth_token` in the config file to keep the token stable across restarts.
+
 ## Configuration
 
 GoProbe reads a YAML config file with server settings, monitor defaults, and the initial target list.
@@ -41,6 +43,7 @@ GoProbe reads a YAML config file with server settings, monitor defaults, and the
 ```yaml
 server:
   port: 8080
+  auth_token: "change-me"
 
 monitor:
   default_interval: 10s
@@ -63,7 +66,9 @@ Notes:
 
 - `type` must be `http` or `tcp`
 - `interval` and `timeout` are optional per target
+- the minimum `interval` and `timeout` is `1s`
 - targets added through the API are kept in memory only and are not written back to `config.yaml`
+- runtime-created targets cannot point at localhost, private IP space, link-local addresses, or other special-use IP ranges
 
 ## API
 
@@ -106,6 +111,7 @@ Adds a target at runtime and starts polling it immediately.
 
 ```bash
 curl -X POST http://localhost:8080/api/targets \
+  -H "Authorization: Bearer change-me" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Example",
@@ -122,6 +128,7 @@ Removes a target and stops its polling loop.
 
 ```bash
 curl -X DELETE http://localhost:8080/api/targets/Example
+  -H "Authorization: Bearer change-me"
 ```
 
 ## How it works

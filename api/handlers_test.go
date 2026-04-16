@@ -119,14 +119,12 @@ func TestGetTarget(t *testing.T) {
 }
 
 func TestCreateTarget(t *testing.T) {
-	healthSrv := newHealthyHTTPServer(t)
-	defer healthSrv.Close()
-
 	srv, cleanup := newTestServer(t, nil)
 	defer cleanup()
 
-	body := []byte(`{"name":"Example","type":"http","endpoint":"` + healthSrv.URL + `"}`)
+	body := []byte(`{"name":"Example","type":"http","endpoint":"https://example.com"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+srv.AuthToken())
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
@@ -134,10 +132,9 @@ func TestCreateTarget(t *testing.T) {
 		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
 	}
 
-	waitFor(t, time.Second, func() bool {
-		status, ok := srv.monitor.GetStatus("Example")
-		return ok && status.CheckCount > 0
-	})
+	if _, ok := srv.monitor.GetStatus("Example"); !ok {
+		t.Fatal("GetStatus() ok = false, want true")
+	}
 }
 
 func TestCreateTargetBadRequest(t *testing.T) {
@@ -161,6 +158,7 @@ func TestCreateTargetBadRequest(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewReader([]byte(tc.body)))
+			req.Header.Set("Authorization", "Bearer "+srv.AuthToken())
 			rec := httptest.NewRecorder()
 			srv.Handler().ServeHTTP(rec, req)
 
@@ -168,6 +166,47 @@ func TestCreateTargetBadRequest(t *testing.T) {
 				t.Fatalf("status = %d, want 400", rec.Code)
 			}
 		})
+	}
+}
+
+func TestCreateTargetRequiresAuthorization(t *testing.T) {
+	srv, cleanup := newTestServer(t, nil)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewReader([]byte(`{"name":"Example","type":"http","endpoint":"https://example.com"}`)))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestCreateTargetRejectsUnknownFields(t *testing.T) {
+	srv, cleanup := newTestServer(t, nil)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewReader([]byte(`{"name":"Example","type":"http","endpoint":"https://example.com","extra":"nope"}`)))
+	req.Header.Set("Authorization", "Bearer "+srv.AuthToken())
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestCreateTargetRejectsTrailingJSON(t *testing.T) {
+	srv, cleanup := newTestServer(t, nil)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewReader([]byte(`{"name":"Example","type":"http","endpoint":"https://example.com"}{"extra":true}`)))
+	req.Header.Set("Authorization", "Bearer "+srv.AuthToken())
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
 
@@ -184,7 +223,8 @@ func TestCreateTargetDuplicate(t *testing.T) {
 	}})
 	defer cleanup()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewReader([]byte(`{"name":"Example","type":"http","endpoint":"`+healthSrv.URL+`"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewReader([]byte(`{"name":"Example","type":"http","endpoint":"https://example.com"}`)))
+	req.Header.Set("Authorization", "Bearer "+srv.AuthToken())
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
@@ -212,6 +252,7 @@ func TestDeleteTarget(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/targets/Example", nil)
+	req.Header.Set("Authorization", "Bearer "+srv.AuthToken())
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
@@ -228,11 +269,33 @@ func TestDeleteTargetNotFound(t *testing.T) {
 	defer cleanup()
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/targets/missing", nil)
+	req.Header.Set("Authorization", "Bearer "+srv.AuthToken())
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestServerAppliesHTTPLimits(t *testing.T) {
+	srv, cleanup := newTestServer(t, nil)
+	defer cleanup()
+
+	if srv.server.ReadHeaderTimeout != readHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v", srv.server.ReadHeaderTimeout, readHeaderTimeout)
+	}
+	if srv.server.ReadTimeout != readTimeout {
+		t.Fatalf("ReadTimeout = %v, want %v", srv.server.ReadTimeout, readTimeout)
+	}
+	if srv.server.WriteTimeout != writeTimeout {
+		t.Fatalf("WriteTimeout = %v, want %v", srv.server.WriteTimeout, writeTimeout)
+	}
+	if srv.server.IdleTimeout != idleTimeout {
+		t.Fatalf("IdleTimeout = %v, want %v", srv.server.IdleTimeout, idleTimeout)
+	}
+	if srv.server.MaxHeaderBytes != maxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", srv.server.MaxHeaderBytes, maxHeaderBytes)
 	}
 }
 
@@ -242,8 +305,11 @@ func newTestServer(t *testing.T, targets []config.Target) (*Server, func()) {
 	mon := monitor.NewMonitor(targets, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	mon.Start()
 
-	srv := NewServer(8080, config.MonitorConfig{
-		DefaultInterval: 50 * time.Millisecond,
+	srv := NewServer(config.ServerConfig{
+		Port:      8080,
+		AuthToken: "test-token",
+	}, config.MonitorConfig{
+		DefaultInterval: time.Second,
 		DefaultTimeout:  time.Second,
 	}, mon, slog.New(slog.NewTextHandler(io.Discard, nil)))
 

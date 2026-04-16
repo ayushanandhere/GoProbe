@@ -1,8 +1,10 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -67,8 +69,18 @@ func (s *Server) handleGetTarget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+
 	var req createTargetRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -84,6 +96,8 @@ func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, monitor.ErrTargetAlreadyExists):
 			writeError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, monitor.ErrMonitorStopped):
+			writeError(w, http.StatusServiceUnavailable, err.Error())
 		default:
 			writeError(w, http.StatusBadRequest, err.Error())
 		}
@@ -94,6 +108,10 @@ func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+
 	name, err := decodeTargetName(r.PathValue("name"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid target name")
@@ -164,4 +182,30 @@ func decodeTargetName(value string) (string, error) {
 		return "", errors.New("empty target name")
 	}
 	return name, nil
+}
+
+func (s *Server) authorizeMutation(w http.ResponseWriter, r *http.Request) bool {
+	const challenge = `Bearer realm="goprobe"`
+	const prefix = "Bearer "
+
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authHeader == "" {
+		w.Header().Set("WWW-Authenticate", challenge)
+		writeError(w, http.StatusUnauthorized, "missing bearer token")
+		return false
+	}
+	if !strings.HasPrefix(authHeader, prefix) {
+		w.Header().Set("WWW-Authenticate", challenge)
+		writeError(w, http.StatusUnauthorized, "invalid bearer token")
+		return false
+	}
+
+	token := strings.TrimSpace(strings.TrimPrefix(authHeader, prefix))
+	if subtle.ConstantTimeCompare([]byte(token), []byte(s.authToken)) != 1 {
+		w.Header().Set("WWW-Authenticate", challenge)
+		writeError(w, http.StatusUnauthorized, "invalid bearer token")
+		return false
+	}
+
+	return true
 }

@@ -151,6 +151,77 @@ func TestApplyTargetDefaultsAndValidateTarget(t *testing.T) {
 	}
 }
 
+func TestValidateTargetRejectsUnsafeRuntimeTargets(t *testing.T) {
+	tests := []struct {
+		name   string
+		target Target
+	}{
+		{
+			name: "bad scheme",
+			target: Target{
+				Name:     "Example",
+				Type:     "http",
+				Endpoint: "file:///etc/passwd",
+				Interval: time.Second,
+				Timeout:  time.Second,
+			},
+		},
+		{
+			name: "localhost http",
+			target: Target{
+				Name:     "Example",
+				Type:     "http",
+				Endpoint: "http://localhost:8080",
+				Interval: time.Second,
+				Timeout:  time.Second,
+			},
+		},
+		{
+			name: "private ip http",
+			target: Target{
+				Name:     "Example",
+				Type:     "http",
+				Endpoint: "http://127.0.0.1:8080",
+				Interval: time.Second,
+				Timeout:  time.Second,
+			},
+		},
+		{
+			name: "private ip tcp",
+			target: Target{
+				Name:     "Example",
+				Type:     "tcp",
+				Endpoint: "10.0.0.5:5432",
+				Interval: time.Second,
+				Timeout:  time.Second,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateTarget(tc.target); err == nil {
+				t.Fatal("ValidateTarget() error = nil, want rejection")
+			}
+		})
+	}
+}
+
+func TestValidateTargetAllowsTrustedPrivateTargets(t *testing.T) {
+	target := Target{
+		Name:     "Example",
+		Type:     "tcp",
+		Endpoint: "localhost:6379",
+		Interval: time.Second,
+		Timeout:  time.Second,
+		Trusted:  true,
+	}
+
+	if err := ValidateTarget(target); err != nil {
+		t.Fatalf("ValidateTarget() error = %v", err)
+	}
+}
+
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()
 

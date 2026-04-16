@@ -3,15 +3,29 @@ package monitor
 import (
 	"context"
 	"fmt"
-	"net"
+	"io"
 	"net/http"
 	"time"
+
+	"github.com/ayushanandhere/GoProbe/config"
 )
 
-func CheckHTTP(endpoint string, timeout time.Duration) (statusCode int, responseTime time.Duration, err error) {
-	client := &http.Client{Timeout: timeout}
+const maxRedirects = 10
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, nil)
+func CheckHTTP(ctx context.Context, target config.Target) (statusCode int, responseTime time.Duration, err error) {
+	dialer := newTargetDialer(target)
+	client := &http.Client{
+		Timeout: target.Timeout,
+		Transport: &http.Transport{
+			Proxy:                 nil,
+			DialContext:           dialer.DialContext,
+			TLSHandshakeTimeout:   target.Timeout,
+			ResponseHeaderTimeout: target.Timeout,
+		},
+		CheckRedirect: dialer.CheckRedirect,
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.Endpoint, nil)
 	if err != nil {
 		return 0, 0, fmt.Errorf("build request: %w", err)
 	}
@@ -23,13 +37,16 @@ func CheckHTTP(endpoint string, timeout time.Duration) (statusCode int, response
 		return 0, responseTime, err
 	}
 	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 
 	return resp.StatusCode, responseTime, nil
 }
 
-func CheckTCP(endpoint string, timeout time.Duration) (responseTime time.Duration, err error) {
+func CheckTCP(ctx context.Context, target config.Target) (responseTime time.Duration, err error) {
+	dialer := newTargetDialer(target)
+
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", endpoint, timeout)
+	conn, err := dialer.DialContext(ctx, "tcp", target.Endpoint)
 	responseTime = time.Since(start)
 	if err != nil {
 		return responseTime, err

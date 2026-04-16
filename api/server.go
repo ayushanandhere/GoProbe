@@ -2,9 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ayushanandhere/GoProbe/config"
@@ -13,6 +16,7 @@ import (
 
 type Server struct {
 	port      int
+	authToken string
 	startedAt time.Time
 	logger    *slog.Logger
 	monitor   *monitor.Monitor
@@ -21,9 +25,25 @@ type Server struct {
 	server    *http.Server
 }
 
-func NewServer(port int, defaults config.MonitorConfig, mon *monitor.Monitor, logger *slog.Logger) *Server {
+const (
+	maxRequestBodyBytes = 1 << 20
+	readHeaderTimeout   = 2 * time.Second
+	readTimeout         = 5 * time.Second
+	writeTimeout        = 10 * time.Second
+	idleTimeout         = 60 * time.Second
+	maxHeaderBytes      = 1 << 20
+)
+
+func NewServer(serverConfig config.ServerConfig, defaults config.MonitorConfig, mon *monitor.Monitor, logger *slog.Logger) *Server {
+	authToken := strings.TrimSpace(serverConfig.AuthToken)
+	if authToken == "" {
+		authToken = mustGenerateAuthToken()
+		logger.Warn("generated ephemeral API token for mutating endpoints", "token", authToken)
+	}
+
 	s := &Server{
-		port:      port,
+		port:      serverConfig.Port,
+		authToken: authToken,
 		startedAt: time.Now(),
 		logger:    logger,
 		monitor:   mon,
@@ -33,8 +53,13 @@ func NewServer(port int, defaults config.MonitorConfig, mon *monitor.Monitor, lo
 
 	s.registerRoutes()
 	s.server = &http.Server{
-		Addr:    s.address(),
-		Handler: s.mux,
+		Addr:              s.address(),
+		Handler:           http.MaxBytesHandler(s.mux, maxRequestBodyBytes),
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 
 	return s
@@ -62,4 +87,16 @@ func (s *Server) registerRoutes() {
 
 func (s *Server) address() string {
 	return ":" + strconv.Itoa(s.port)
+}
+
+func (s *Server) AuthToken() string {
+	return s.authToken
+}
+
+func mustGenerateAuthToken() string {
+	token := make([]byte, 32)
+	if _, err := rand.Read(token); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(token)
 }

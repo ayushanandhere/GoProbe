@@ -15,6 +15,7 @@ var (
 	ErrTargetAlreadyExists = errors.New("target already exists")
 	ErrTargetNotFound      = errors.New("target not found")
 	ErrMonitorStopped      = errors.New("monitor is stopped")
+	ErrTargetLimitReached  = errors.New("target limit reached")
 )
 
 type targetState struct {
@@ -54,6 +55,7 @@ func NewMonitor(targets []config.Target, logger *slog.Logger) *Monitor {
 	}
 
 	for _, target := range targets {
+		target.Trusted = true
 		m.states[target.Name] = newTargetState(target)
 	}
 
@@ -62,12 +64,16 @@ func NewMonitor(targets []config.Target, logger *slog.Logger) *Monitor {
 
 func (m *Monitor) Start() {
 	m.startOnce.Do(func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.rootCtx.Err() != nil {
+			return
+		}
+
 		m.collectorW.Add(1)
 		go m.collectResults()
 
-		m.mu.Lock()
 		m.started = true
-		defer m.mu.Unlock()
 		for name := range m.states {
 			m.startPollerLocked(name)
 		}
@@ -95,17 +101,19 @@ func (m *Monitor) Stop() {
 
 func (m *Monitor) GetAllStatuses() []HealthStatus {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	names := make([]string, 0, len(m.states))
-	for name := range m.states {
+	statusByName := make(map[string]HealthStatus, len(m.states))
+	for name, state := range m.states {
 		names = append(names, name)
+		statusByName[name] = state.status
 	}
+	m.mu.RUnlock()
+
 	sort.Strings(names)
 
 	statuses := make([]HealthStatus, 0, len(names))
 	for _, name := range names {
-		statuses = append(statuses, m.states[name].status)
+		statuses = append(statuses, statusByName[name])
 	}
 
 	return statuses
@@ -139,6 +147,9 @@ func (m *Monitor) AddTarget(target config.Target) (*HealthStatus, error) {
 
 	if _, exists := m.states[target.Name]; exists {
 		return nil, ErrTargetAlreadyExists
+	}
+	if len(m.states) >= config.MaxTargets {
+		return nil, ErrTargetLimitReached
 	}
 
 	state := newTargetState(target)
@@ -219,7 +230,7 @@ func (m *Monitor) performCheck(ctx context.Context, target config.Target) {
 
 	switch target.Type {
 	case "http":
-		statusCode, responseTime, err := CheckHTTP(target.Endpoint, target.Timeout)
+		statusCode, responseTime, err := CheckHTTP(ctx, target)
 		result.StatusCode = statusCode
 		result.ResponseTime = responseTime
 		result.IsHealthy = err == nil && statusCode >= 200 && statusCode < 300
@@ -227,7 +238,7 @@ func (m *Monitor) performCheck(ctx context.Context, target config.Target) {
 			result.Error = err.Error()
 		}
 	case "tcp":
-		responseTime, err := CheckTCP(target.Endpoint, target.Timeout)
+		responseTime, err := CheckTCP(ctx, target)
 		result.ResponseTime = responseTime
 		result.IsHealthy = err == nil
 		if err != nil {
@@ -310,11 +321,4 @@ func newTargetState(target config.Target) *targetState {
 		},
 		history: newHistoryBuffer(),
 	}
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

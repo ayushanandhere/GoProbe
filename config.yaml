@@ -1,5 +1,6 @@
 server:
   port: 8080
+  auth_token: "change-me"
 
 monitor:
   default_interval: 10s

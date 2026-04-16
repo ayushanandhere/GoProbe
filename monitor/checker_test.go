@@ -1,12 +1,16 @@
 package monitor
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
+
+	"github.com/ayushanandhere/GoProbe/config"
 )
 
 func TestCheckHTTP(t *testing.T) {
@@ -16,7 +20,7 @@ func TestCheckHTTP(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		statusCode, responseTime, err := CheckHTTP(srv.URL, time.Second)
+		statusCode, responseTime, err := CheckHTTP(context.Background(), testHTTPCheckerTarget(srv.URL))
 		if err != nil {
 			t.Fatalf("CheckHTTP() error = %v", err)
 		}
@@ -34,7 +38,7 @@ func TestCheckHTTP(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		statusCode, _, err := CheckHTTP(srv.URL, time.Second)
+		statusCode, _, err := CheckHTTP(context.Background(), testHTTPCheckerTarget(srv.URL))
 		if err != nil {
 			t.Fatalf("CheckHTTP() error = %v", err)
 		}
@@ -50,9 +54,22 @@ func TestCheckHTTP(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		_, _, err := CheckHTTP(srv.URL, 20*time.Millisecond)
+		target := testHTTPCheckerTarget(srv.URL)
+		target.Timeout = 20 * time.Millisecond
+
+		_, _, err := CheckHTTP(context.Background(), target)
 		if err == nil {
 			t.Fatal("CheckHTTP() error = nil, want timeout")
+		}
+	})
+
+	t.Run("untrusted redirect target is rejected", func(t *testing.T) {
+		err := validateRedirectTarget(&url.URL{
+			Scheme: "http",
+			Host:   "127.0.0.1:8080",
+		})
+		if err == nil {
+			t.Fatal("validateRedirectTarget() error = nil, want rejection")
 		}
 	})
 }
@@ -74,7 +91,14 @@ func TestCheckTCP(t *testing.T) {
 			}
 		}()
 
-		responseTime, err := CheckTCP(listener.Addr().String(), time.Second)
+		responseTime, err := CheckTCP(context.Background(), config.Target{
+			Name:     "listener",
+			Type:     "tcp",
+			Endpoint: listener.Addr().String(),
+			Interval: time.Second,
+			Timeout:  time.Second,
+			Trusted:  true,
+		})
 		if err != nil {
 			t.Fatalf("CheckTCP() error = %v", err)
 		}
@@ -92,7 +116,14 @@ func TestCheckTCP(t *testing.T) {
 		addr := listener.Addr().String()
 		listener.Close()
 
-		_, err = CheckTCP(addr, 100*time.Millisecond)
+		_, err = CheckTCP(context.Background(), config.Target{
+			Name:     "listener",
+			Type:     "tcp",
+			Endpoint: addr,
+			Interval: time.Second,
+			Timeout:  100 * time.Millisecond,
+			Trusted:  true,
+		})
 		if err == nil {
 			t.Fatal("CheckTCP() error = nil, want refusal")
 		}
@@ -101,4 +132,15 @@ func TestCheckTCP(t *testing.T) {
 			t.Fatalf("CheckTCP() error = %v, want connection refusal", err)
 		}
 	})
+}
+
+func testHTTPCheckerTarget(endpoint string) config.Target {
+	return config.Target{
+		Name:     "http-target",
+		Type:     "http",
+		Endpoint: endpoint,
+		Interval: time.Second,
+		Timeout:  time.Second,
+		Trusted:  true,
+	}
 }

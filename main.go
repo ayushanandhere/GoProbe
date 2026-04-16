@@ -32,7 +32,7 @@ func main() {
 	mon := monitor.NewMonitor(cfg.Targets, log)
 	mon.Start()
 
-	apiServer := api.NewServer(cfg.Server.Port, cfg.Monitor, mon, log)
+	apiServer := api.NewServer(cfg.Server, cfg.Monitor, mon, log)
 
 	go func() {
 		if err := apiServer.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -51,10 +51,10 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	mon.Stop()
 	if err := apiServer.Shutdown(ctx); err != nil {
 		log.Error("HTTP server shutdown failed", "error", err)
 	}
+	mon.Stop()
 
 	log.Info("GoProbe stopped")
 }

@@ -81,8 +81,9 @@ func TestAddTargetStartsPollingImmediately(t *testing.T) {
 		Name:     "dynamic",
 		Type:     "http",
 		Endpoint: srv.URL,
-		Interval: 40 * time.Millisecond,
+		Interval: time.Second,
 		Timeout:  time.Second,
+		Trusted:  true,
 	})
 	if err != nil {
 		t.Fatalf("AddTarget() error = %v", err)
